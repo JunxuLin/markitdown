@@ -1,0 +1,54 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggered only on version tags like v1.0.0
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-20.04
+            artifact_name: markitdown-linux-x64
+          - os: windows-latest
+            artifact_name: markitdown-windows-x64.exe
+          - os: macos-latest
+            artifact_name: markitdown-macos-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install ./packages/markitdown[all]
+
+      - name: Build binary
+        run: |
+          echo "from markitdown.__main__ import main; main()" > _entry.py
+          pyinstaller --onefile --name markitdown --collect-all magika _entry.py
+
+      # Rename to platform-specific filename
+      - name: Rename binary (Linux/Mac)
+        if: runner.os != 'Windows'
+        run: mv dist/markitdown dist/${{ matrix.artifact_name }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: mv dist/markitdown.exe dist/${{ matrix.artifact_name }}
+
+      # Upload to Release
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.artifact_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
