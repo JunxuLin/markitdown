@@ -1,4 +1,4 @@
-from typing import Any, BinaryIO, Optional
+from typing import Any, BinaryIO, List, Optional, Tuple
 from ._stream_info import StreamInfo
 
 
@@ -10,6 +10,7 @@ class DocumentConverterResult:
         markdown: str,
         *,
         title: Optional[str] = None,
+        chapters: Optional[List[Tuple[str, str]]] = None,
     ):
         """
         Initialize the DocumentConverterResult.
@@ -20,9 +21,12 @@ class DocumentConverterResult:
         Parameters:
         - markdown: The converted Markdown text.
         - title: Optional title of the document.
+        - chapters: Optional list of (filename, markdown) tuples representing individual
+          chapters or sections (e.g., from an EPUB split by chapter).
         """
         self.markdown = markdown
         self.title = title
+        self.chapters = chapters
 
     @property
     def text_content(self) -> str:

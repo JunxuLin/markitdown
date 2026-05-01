@@ -43,6 +43,25 @@ def main():
                 OR
 
                 markitdown example.pdf > example.md
+
+            EPUB EXAMPLES:
+
+                Convert an EPUB to a single markdown file:
+
+                markitdown book.epub -o book.md
+
+                Split into one file per chapter inside ./book/ (with front-matter/,
+                chapters/, back-matter/ subdirectories and a README.md TOC):
+
+                markitdown book.epub --split-by-chapter ./book/
+
+                Also extract and save all images under ./book/assets/:
+
+                markitdown book.epub --split-by-chapter ./book/ --save-images ./book/
+
+                Skip subdirectory organisation (all files flat inside ./book/):
+
+                markitdown book.epub --split-by-chapter ./book/ --no-organize
             """
         ).strip(),
     )
@@ -123,8 +142,44 @@ def main():
         "When omitted entirely, images are not included in the output (default).",
     )
 
+    parser.add_argument(
+        "--split-by-chapter",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="DIR",
+        help="(EPUB only) Split output by chapter/spine item. "
+        "Without DIR, chapters are separated by '---' in a single output. "
+        "With DIR, each chapter is written as a separate .md file inside DIR, "
+        "organised into front-matter/, chapters/, back-matter/ subdirectories.",
+    )
+
+    parser.add_argument(
+        "--no-organize",
+        action="store_true",
+        help="(EPUB only) When used with --split-by-chapter DIR, write all chapter files "
+        "flat into DIR without subdirectory organisation.",
+    )
+
+    parser.add_argument(
+        "--same-name",
+        action="store_true",
+        help="Write output to a .md file named after the input file in the current directory "
+        "(e.g., /path/to/book.epub → ./book.md). "
+        "Ignored when reading from stdin or when -o is also given.",
+    )
+
     parser.add_argument("filename", nargs="?")
     args = parser.parse_args()
+
+    # On macOS (and other shells) users sometimes wrap paths in double quotes while
+    # still using backslash-escaping (e.g. "path\ with\ spaces"), which passes the
+    # literal backslashes to the program.  If the filename doesn't exist as-is, try
+    # stripping backslash escapes (\X → X) to recover the real path.
+    if args.filename and not os.path.exists(args.filename):
+        unescaped = re.sub(r"\\(.)", r"\1", args.filename)
+        if os.path.exists(unescaped):
+            args.filename = unescaped
 
     # Parse the extension hint
     extension_hint = args.extension
@@ -199,18 +254,29 @@ def main():
     else:
         markitdown = MarkItDown(enable_plugins=args.use_plugins)
 
+    # split_by_chapter: True means ---separators, a string means output directory.
+    # When --split-by-chapter (no DIR) + --same-name are combined, auto-derive the
+    # output folder name from the input filename stem (written to CWD).
+    split_by_chapter = args.split_by_chapter
+    if split_by_chapter is True and args.same_name and args.filename:
+        split_by_chapter = os.path.splitext(os.path.basename(args.filename))[0]
+
     # Resolve the images directory path
     save_images = args.save_images
     if save_images is True:
-        # Auto-compute directory name from output filename, then input filename
-        if args.output:
+        if isinstance(split_by_chapter, str):
+            # Co-locate images with the chapter folder (goes to <folder>/assets/)
+            save_images = split_by_chapter
+        elif args.output:
             stem = os.path.splitext(os.path.basename(args.output))[0]
+            stem = re.sub(r"[^\w\-]", "_", stem)
+            save_images = f"images_{stem}"
         elif args.filename:
             stem = os.path.splitext(os.path.basename(args.filename))[0]
+            stem = re.sub(r"[^\w\-]", "_", stem)
+            save_images = f"images_{stem}"
         else:
-            stem = "output"
-        stem = re.sub(r"[^\w\-]", "_", stem)
-        save_images = f"images_{stem}"
+            save_images = "images_output"
 
     if args.filename is None:
         result = markitdown.convert_stream(
@@ -218,6 +284,9 @@ def main():
             stream_info=stream_info,
             keep_data_uris=args.keep_data_uris,
             save_images=save_images,
+            split_by_chapter=bool(split_by_chapter),
+            chapters_output_dir=split_by_chapter if isinstance(split_by_chapter, str) else None,
+            no_organize=args.no_organize,
         )
     else:
         result = markitdown.convert(
@@ -225,15 +294,33 @@ def main():
             stream_info=stream_info,
             keep_data_uris=args.keep_data_uris,
             save_images=save_images,
+            split_by_chapter=bool(split_by_chapter),
+            chapters_output_dir=split_by_chapter if isinstance(split_by_chapter, str) else None,
+            no_organize=args.no_organize,
         )
 
-    _handle_output(args, result)
+    _handle_output(args, result, split_by_chapter)
 
 
-def _handle_output(args, result: DocumentConverterResult):
-    """Handle output to stdout or file"""
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
+def _handle_output(args, result: DocumentConverterResult, split_by_chapter=False):
+    """Handle output to stdout, file, or directory of chapter files."""
+    # Resolve effective output path: -o wins, then --same-name derives it from input
+    output_path = args.output
+    if output_path is None and getattr(args, "same_name", False) and args.filename:
+        stem = os.path.splitext(os.path.basename(args.filename))[0]
+        output_path = stem + ".md"
+    # When --split-by-chapter DIR is given, write one .md file per chapter
+    if isinstance(split_by_chapter, str) and result.chapters:
+        output_dir = split_by_chapter
+        for chapter_filename, chapter_markdown in result.chapters:
+            dest = os.path.join(output_dir, chapter_filename)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(chapter_markdown)
+        return
+
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(result.markdown)
     else:
         # Handle stdout encoding errors more gracefully

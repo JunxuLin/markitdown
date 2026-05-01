@@ -367,6 +367,53 @@ def test_speech_transcription() -> None:
         )
 
 
+def test_epub_split_by_chapter() -> None:
+    """Test that split_by_chapter inserts --- separators between EPUB spine items."""
+    markitdown = MarkItDown()
+    epub_file = os.path.join(TEST_FILES_DIR, "test.epub")
+
+    result_default = markitdown.convert(epub_file)
+    result_split = markitdown.convert(epub_file, split_by_chapter=True)
+
+    # Both results must contain the same chapter content
+    assert "# Chapter 1: Test Content" in result_split.markdown
+    assert "# Chapter 2: More Content" in result_split.markdown
+
+    # split_by_chapter must insert horizontal rules between chapters
+    assert "---" in result_split.markdown
+
+    # The default result must NOT contain horizontal rules between chapters
+    assert "---" not in result_default.markdown
+
+
+def test_epub_split_by_chapter_chapters_field() -> None:
+    """Test that split_by_chapter populates the chapters field with (filename, content) tuples."""
+    markitdown = MarkItDown()
+    epub_file = os.path.join(TEST_FILES_DIR, "test.epub")
+
+    result_default = markitdown.convert(epub_file)
+    result_split = markitdown.convert(epub_file, split_by_chapter=True)
+
+    # Default conversion has no chapters list
+    assert result_default.chapters is None
+
+    # split_by_chapter populates chapters
+    assert result_split.chapters is not None
+    assert len(result_split.chapters) > 1
+
+    # First entry is the README/index file
+    assert result_split.chapters[0][0] == "README.md"
+
+    # All filenames end in .md (possibly under a subdirectory)
+    for fname, _ in result_split.chapters:
+        assert fname.endswith(".md"), f"Expected .md filename, got: {fname}"
+
+    # Chapter content is spread across individual entries
+    all_content = "\n".join(c for _, c in result_split.chapters)
+    assert "# Chapter 1: Test Content" in all_content
+    assert "# Chapter 2: More Content" in all_content
+
+
 def test_exceptions() -> None:
     # Check that an exception is raised when trying to convert an unsupported format
     markitdown = MarkItDown()
@@ -380,6 +427,60 @@ def test_exceptions() -> None:
         )
     assert len(exc_info.value.attempts) == 1
     assert type(exc_info.value.attempts[0].converter).__name__ == "PptxConverter"
+
+
+def test_epub_split_by_chapter_with_save_images() -> None:
+    """Test that image references in chapter files are relative when both
+    split_by_chapter and save_images point to the same directory."""
+    import tempfile
+    import re as _re
+
+    markitdown = MarkItDown()
+    epub_file = os.path.join(TEST_FILES_DIR, "test_images.epub")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = markitdown.convert(
+            epub_file,
+            split_by_chapter=True,
+            chapters_output_dir=tmpdir,
+            save_images=tmpdir,
+        )
+
+        assert result.chapters is not None
+
+        # write the chapter files, creating subdirs as needed (like _handle_output does)
+        for fname, content in result.chapters:
+            dest = os.path.join(tmpdir, fname)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(content)
+
+        # Find the chapter file with the image (may be in a subdir)
+        chapter_file = None
+        for fname, _ in result.chapters:
+            if "chap_img" in fname or "chapter-with-image" in fname:
+                chapter_file = os.path.join(tmpdir, fname)
+                break
+        assert chapter_file and os.path.exists(chapter_file), \
+            f"Chapter-with-image file not found among {[f for f,_ in result.chapters]}"
+
+        with open(chapter_file, encoding="utf-8") as f:
+            md = f.read()
+
+        # Image reference must be relative, not absolute
+        assert tmpdir not in md, "Image path should be relative, not absolute"
+        assert "cover.png" in md
+
+        # The referenced image must actually exist at the resolved path
+        img_ref = None
+        for line in md.splitlines():
+            m = _re.search(r'!\[.*?\]\((.+?)\)', line)
+            if m and "cover.png" in m.group(1):
+                img_ref = m.group(1)
+        assert img_ref is not None
+        chapter_dir = os.path.dirname(chapter_file)
+        resolved = os.path.normpath(os.path.join(chapter_dir, img_ref))
+        assert os.path.exists(resolved), f"Image not found at resolved path: {resolved}"
 
 
 @pytest.mark.skipif(
@@ -490,6 +591,7 @@ if __name__ == "__main__":
         test_file_uris,
         test_docx_comments,
         test_input_as_strings,
+        test_epub_split_by_chapter,
         test_markitdown_remote,
         test_speech_transcription,
         test_exceptions,
